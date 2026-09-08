@@ -1,6 +1,6 @@
-// v1.1 Authentication layer
+// v1.2 Authentication layer
 // Uses the browser-safe Supabase publishable key.
-// The CRM remains static/local-data for now; this milestone adds real user authentication.
+// Authentication is now connected to the CRM profiles table.
 
 (function () {
   const config = window.CRM_CONFIG || {};
@@ -51,7 +51,6 @@
   `;
   document.body.prepend(screen);
 
-  // Keep the CRM UI hidden until authentication has been resolved.
   document.querySelector('.sidebar').style.visibility = 'hidden';
   document.querySelector('.main').style.visibility = 'hidden';
 
@@ -74,6 +73,21 @@
     document.getElementById('auth-switch').textContent = register ? 'Already have an account? Sign in' : 'Create a new account';
     document.getElementById('auth-password').setAttribute('autocomplete', register ? 'new-password' : 'current-password');
     message('');
+  }
+
+  async function ensureProfile(user) {
+    if (!user || !supabase) return;
+
+    const fullName = user.user_metadata?.full_name || user.user_metadata?.name || '';
+    const { error } = await supabase.from('profiles').upsert({
+      id: user.id,
+      full_name: fullName,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'id' });
+
+    if (error) {
+      console.warn('CRM profile could not be created/updated:', error.message);
+    }
   }
 
   function showCRM(session) {
@@ -105,6 +119,15 @@
     document.getElementById('auth-email').focus();
   }
 
+  async function handleSession(session) {
+    if (!session?.user) {
+      showAuth();
+      return;
+    }
+    await ensureProfile(session.user);
+    showCRM(session);
+  }
+
   async function init() {
     if (!supabaseUrl || !supabaseKey) {
       message('Supabase configuration is missing.', 'error');
@@ -119,13 +142,20 @@
     supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
     window.crmSupabase = supabase;
 
-    const { data } = await supabase.auth.getSession();
-    if (data.session) showCRM(data.session);
-    else showAuth();
+    const { data, error } = await supabase.auth.getSession();
+    if (error) {
+      message(error.message, 'error');
+      showAuth();
+      return;
+    }
+    await handleSession(data.session);
 
     supabase.auth.onAuthStateChange(function (event, session) {
-      if (session) showCRM(session);
-      else showAuth();
+      if (session) {
+        handleSession(session);
+      } else {
+        showAuth();
+      }
     });
   }
 
@@ -152,13 +182,15 @@
         });
         if (error) throw error;
         if (data.session) {
+          await ensureProfile(data.user);
           message('Account created. Opening your CRM…', 'success');
         } else {
           message('Account created. Check your email to confirm your account, then sign in.', 'success');
         }
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        if (data.user) await ensureProfile(data.user);
       }
     } catch (error) {
       message(error.message || 'Authentication failed.', 'error');
