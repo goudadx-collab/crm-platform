@@ -1,6 +1,6 @@
 // v1.2 Authentication layer
 // Uses the browser-safe Supabase publishable key.
-// Authentication is now connected to the CRM profiles table.
+// Authentication is connected to the CRM profiles table and cloud data layer.
 
 (function () {
   const config = window.CRM_CONFIG || {};
@@ -77,17 +77,23 @@
 
   async function ensureProfile(user) {
     if (!user || !supabase) return;
-
     const fullName = user.user_metadata?.full_name || user.user_metadata?.name || '';
     const { error } = await supabase.from('profiles').upsert({
       id: user.id,
       full_name: fullName,
       updated_at: new Date().toISOString()
     }, { onConflict: 'id' });
+    if (error) console.warn('CRM profile could not be created/updated:', error.message);
+  }
 
-    if (error) {
-      console.warn('CRM profile could not be created/updated:', error.message);
+  async function handleSession(session) {
+    if (!session?.user) {
+      showAuth();
+      return;
     }
+    await ensureProfile(session.user);
+    showCRM(session);
+    if (window.crmCloud) await window.crmCloud.initForUser();
   }
 
   function showCRM(session) {
@@ -119,21 +125,11 @@
     document.getElementById('auth-email').focus();
   }
 
-  async function handleSession(session) {
-    if (!session?.user) {
-      showAuth();
-      return;
-    }
-    await ensureProfile(session.user);
-    showCRM(session);
-  }
-
   async function init() {
     if (!supabaseUrl || !supabaseKey) {
       message('Supabase configuration is missing.', 'error');
       return;
     }
-
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
       message('Supabase library could not be loaded. Please refresh the page.', 'error');
       return;
@@ -151,11 +147,8 @@
     await handleSession(data.session);
 
     supabase.auth.onAuthStateChange(function (event, session) {
-      if (session) {
-        handleSession(session);
-      } else {
-        showAuth();
-      }
+      if (session) handleSession(session);
+      else showAuth();
     });
   }
 
@@ -166,13 +159,11 @@
   document.getElementById('auth-form').addEventListener('submit', async function (event) {
     event.preventDefault();
     if (!supabase) return;
-
     const email = document.getElementById('auth-email').value.trim();
     const password = document.getElementById('auth-password').value;
     const submit = document.getElementById('auth-submit');
     submit.disabled = true;
     message(signUpMode ? 'Creating your account…' : 'Signing you in…');
-
     try {
       if (signUpMode) {
         const { data, error } = await supabase.auth.signUp({
@@ -183,6 +174,7 @@
         if (error) throw error;
         if (data.session) {
           await ensureProfile(data.user);
+          await handleSession(data.session);
           message('Account created. Opening your CRM…', 'success');
         } else {
           message('Account created. Check your email to confirm your account, then sign in.', 'success');
