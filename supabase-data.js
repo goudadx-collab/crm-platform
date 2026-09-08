@@ -7,14 +7,10 @@
   let syncing = false;
   let queued = false;
   let ready = false;
+  let internalStorageWrite = false;
 
-  function client() {
-    return window.crmSupabase || null;
-  }
-
-  function uid() {
-    return crypto.randomUUID();
-  }
+  function client() { return window.crmSupabase || null; }
+  function uid() { return crypto.randomUUID(); }
 
   function ensureIds() {
     const idMaps = {};
@@ -27,31 +23,11 @@
         return { ...row, id: newId };
       });
     });
-
-    data.tasks = data.tasks.map(t => ({
-      ...t,
-      contact_id: t.contact_id ? (idMaps.contacts.get(String(t.contact_id)) || t.contact_id) : null,
-      company_id: t.company_id ? (idMaps.companies.get(String(t.company_id)) || t.company_id) : null,
-      deal_id: t.deal_id ? (idMaps.deals.get(String(t.deal_id)) || t.deal_id) : null
-    }));
-    data.leads = data.leads.map(l => ({
-      ...l,
-      company_id: l.company_id ? (idMaps.companies.get(String(l.company_id)) || l.company_id) : null
-    }));
-    data.contacts = data.contacts.map(c => ({
-      ...c,
-      company_id: c.company_id ? (idMaps.companies.get(String(c.company_id)) || c.company_id) : null
-    }));
-    data.deals = data.deals.map(d => ({
-      ...d,
-      company_id: d.company_id ? (idMaps.companies.get(String(d.company_id)) || d.company_id) : null
-    }));
-    data.activities = data.activities.map(a => ({
-      ...a,
-      contact_id: a.contact_id ? (idMaps.contacts.get(String(a.contact_id)) || a.contact_id) : null,
-      company_id: a.company_id ? (idMaps.companies.get(String(a.company_id)) || a.company_id) : null,
-      deal_id: a.deal_id ? (idMaps.deals.get(String(a.deal_id)) || a.deal_id) : null
-    }));
+    data.tasks = data.tasks.map(t => ({ ...t, contact_id: t.contact_id ? (idMaps.contacts.get(String(t.contact_id)) || t.contact_id) : null, company_id: t.company_id ? (idMaps.companies.get(String(t.company_id)) || t.company_id) : null, deal_id: t.deal_id ? (idMaps.deals.get(String(t.deal_id)) || t.deal_id) : null }));
+    data.leads = data.leads.map(l => ({ ...l, company_id: l.company_id ? (idMaps.companies.get(String(l.company_id)) || l.company_id) : null }));
+    data.contacts = data.contacts.map(c => ({ ...c, company_id: c.company_id ? (idMaps.companies.get(String(c.company_id)) || c.company_id) : null }));
+    data.deals = data.deals.map(d => ({ ...d, company_id: d.company_id ? (idMaps.companies.get(String(d.company_id)) || d.company_id) : null }));
+    data.activities = data.activities.map(a => ({ ...a, contact_id: a.contact_id ? (idMaps.contacts.get(String(a.contact_id)) || a.contact_id) : null, company_id: a.company_id ? (idMaps.companies.get(String(a.company_id)) || a.company_id) : null, deal_id: a.deal_id ? (idMaps.deals.get(String(a.deal_id)) || a.deal_id) : null }));
   }
 
   function companyIdByName(name) {
@@ -60,7 +36,6 @@
   }
 
   function toDb() {
-    const ownerId = client().auth.getUser ? null : null;
     return {
       companies: data.companies.map(c => ({ id: c.id, name: c.name, industry: c.industry || null, website: c.website || null, phone: c.phone || null, location: c.location || null, status: c.status || "Active", notes: c.notes || null })),
       contacts: data.contacts.map(c => ({ id: c.id, company_id: c.company_id || companyIdByName(c.company) || null, name: c.name, email: c.email || null, phone: c.phone || null, job_title: c.jobTitle || null, status: c.status || "Prospect", notes: c.notes || null })),
@@ -81,16 +56,13 @@
     const { error: delError } = await client().from(table).delete().eq("owner_id", ownerId);
     if (delError) throw delError;
     if (!rows.length) return;
-    const payload = rows.map(row => ({ ...row, owner_id: ownerId }));
-    const { error } = await client().from(table).insert(payload);
+    const { error } = await client().from(table).insert(rows.map(row => ({ ...row, owner_id: ownerId })));
     if (error) throw error;
   }
 
   async function pushNow() {
-    if (!ready || !client() || syncing) {
-      queued = true;
-      return;
-    }
+    if (!ready || !client()) return;
+    if (syncing) { queued = true; return; }
     syncing = true;
     queued = false;
     try {
@@ -98,11 +70,10 @@
       if (!user) return;
       ensureIds();
       const db = toDb();
-      // Delete dependents before parents to respect foreign keys.
-      for (const table of ["activities", "tasks", "deals", "leads", "contacts", "companies"]) {
-        await replaceTable(table, db[table], user.id);
-      }
+      for (const table of ["activities", "tasks", "deals", "leads", "contacts", "companies"]) await replaceTable(table, db[table], user.id);
+      internalStorageWrite = true;
       localStorage.setItem("crm-demo-data", JSON.stringify(data));
+      internalStorageWrite = false;
     } catch (error) {
       console.error("Supabase sync failed:", error);
       window.crmCloudLastError = error;
@@ -135,7 +106,9 @@
     data.deals = result.deals.map(d => ({ id: d.id, name: d.name, company: (data.companies.find(x => x.id === d.company_id) || {}).name || "", company_id: d.company_id, value: Number(d.value || 0), stage: d.stage || "New", expected_close_date: d.expected_close_date, expectedCloseDate: d.expected_close_date, owner: d.owner_name || "", owner_name: d.owner_name || "", notes: d.notes || "" }));
     data.tasks = result.tasks.map(t => ({ id: t.id, title: t.title, due: t.due_date || "", due_date: t.due_date, owner: t.owner_name || "", owner_name: t.owner_name || "", status: t.status || "Open", priority: t.priority || "Normal", contact_id: t.contact_id, company_id: t.company_id, deal_id: t.deal_id, notes: t.notes || "" }));
     data.activities = result.activities.map(a => ({ id: a.id, type: a.type || "Note", text: a.text, contact_id: a.contact_id, company_id: a.company_id, deal_id: a.deal_id, time: new Date(a.created_at).toLocaleDateString() }));
+    internalStorageWrite = true;
     localStorage.setItem("crm-demo-data", JSON.stringify(data));
+    internalStorageWrite = false;
     ready = true;
     return true;
   }
@@ -153,9 +126,13 @@
 
   window.crmCloud = { initForUser, pushNow, isReady: () => ready };
 
-  const originalSave = window.save;
-  window.save = function () {
-    if (typeof originalSave === "function") originalSave();
-    pushNow();
+  // Existing modules call save(), which writes crm-demo-data to localStorage.
+  // Observe that write and mirror it to Supabase without changing every module.
+  const originalSetItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (key, value) {
+    originalSetItem.call(this, key, value);
+    if (key === "crm-demo-data" && !internalStorageWrite && ready) {
+      window.crmCloud.pushNow();
+    }
   };
 })();
